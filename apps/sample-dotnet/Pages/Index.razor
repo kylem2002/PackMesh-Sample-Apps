@@ -1,0 +1,1114 @@
+@page "/"
+@using System.Diagnostics
+@using System.Text.Json
+@using Microsoft.JSInterop
+@inject PackMeshClient Client
+@inject IJSRuntime JS
+
+<h1>PackMesh Blazor API Playground</h1>
+<p class="muted">Run guided scenario workflows with live status, validation, and response tabs.</p>
+
+@* Developer-first orientation: explain the happy path before users run any API calls. *@
+<section class="quickstart" aria-labelledby="quickstart-title">
+  <h2 id="quickstart-title">Quick start (30 seconds)</h2>
+  <ol>
+    <li>Add an API key (use a test key where possible).</li>
+    <li>Keep the <strong>Create Scenario</strong> template selected, then click <strong>Run Full Workflow</strong>.</li>
+    <li>Inspect the response summary first, then use the <strong>Response</strong> and <strong>Logs</strong> tabs for full details.</li>
+  </ol>
+  <p class="muted compact">Tip: If a step fails, use <strong>Retry Last Failed Step</strong> with the same payload after you fix the issue.</p>
+</section>
+
+<div class="workspace-grid">
+  <section class="panel">
+    @* Left panel: collect credentials + payload + workflow controls. *@
+    <h2>Configuration</h2>
+
+    <label for="apiKey">API key</label>
+    <div class="row wrap">
+      <input id="apiKey"
+             type="@(ShowApiKey ? "text" : "password")"
+             class="api-key-input"
+             @bind="ApiKey"
+             @bind:event="oninput"
+             @bind:after="OnApiKeyChanged"
+             placeholder="pmk_live_..." />
+      <button class="secondary" @onclick="ToggleApiKeyVisibility">@(ShowApiKey ? "Hide" : "Show")</button>
+      <button class="secondary" @onclick="PasteApiKeyAsync">Paste</button>
+      <button class="secondary" @onclick="ClearKey">Clear</button>
+    </div>
+    <div class="row wrap compact-row">
+      <label class="inline-check">
+        <input type="checkbox" @bind="RememberApiKeyForSession" @bind:after="OnRememberApiKeyChangedAsync" /> Remember in this browser session only
+      </label>
+      <span class="api-state @(IsApiKeyMissing ? "api-state-error" : "api-state-ok")" role="status" aria-live="polite">
+        API Key: @(IsApiKeyMissing ? "Not connected" : "Connected ✓")
+      </span>
+    </div>
+    @if (ShowApiKeyValidation)
+    {
+      <p class="validation-message">API key is required before making requests.</p>
+    }
+
+    <div class="editor-toolbar">
+      <label for="templateSelect">Example JSON</label>
+      <select id="templateSelect" @bind="SelectedTemplate" @bind:after="ApplyTemplate">
+        <option value="scenario">Create Scenario</option>
+        <option value="run">Run Scenario</option>
+        <option value="status">Poll Status</option>
+        <option value="edge">Edge Case (mixed constraints)</option>
+        <option value="invalid">Invalid Example (validation demo)</option>
+        <option value="customEquipment">Create Custom Equipment</option>
+      </select>
+      <button class="secondary" @onclick="FormatRequestJson">Format JSON</button>
+    </div>
+
+    <label for="payloadEditor">Request JSON</label>
+    <textarea id="payloadEditor" @bind="RequestJson" rows="18" class="payload-editor"></textarea>
+    @if (!string.IsNullOrWhiteSpace(JsonValidationError))
+    {
+      <p class="validation-message">@JsonValidationError</p>
+    }
+
+    <div class="steps">
+      <p class="steps-title">Workflow</p>
+      <ol>
+        <li class="@(string.IsNullOrWhiteSpace(ScenarioId) ? string.Empty : "done")">Step 1 — Create Scenario</li>
+        <li class="@(string.IsNullOrWhiteSpace(RunId) ? string.Empty : "done")">Step 2 — Run Scenario</li>
+        <li class="@(Status == "complete" ? "done" : string.Empty)">Step 3 — Poll Status</li>
+      </ol>
+    </div>
+
+    <div class="row wrap action-row">
+      <button class="primary primary-blue" @onclick="CreateScenarioAsync" disabled="@(IsBusy || IsApiKeyMissing)">Create Scenario</button>
+      <button class="primary primary-green" @onclick="RunScenarioAsync" disabled="@(IsBusy || IsApiKeyMissing || string.IsNullOrWhiteSpace(ScenarioId))">Run Scenario</button>
+      <button class="primary primary-amber" @onclick="PollStatusAsync" disabled="@(IsBusy || IsApiKeyMissing || string.IsNullOrWhiteSpace(RunId))">Poll Status</button>
+      <button class="primary primary-purple" @onclick="RunFullWorkflowAsync" disabled="@(IsBusy || IsApiKeyMissing)">Run Full Workflow</button>
+      <button class="secondary" @onclick="GetEquipmentCatalogAsync" disabled="@(IsBusy || IsApiKeyMissing)">Get Equipment Catalog</button>
+      <button class="secondary" @onclick="CreateCustomEquipmentAsync" disabled="@(IsBusy || IsApiKeyMissing)">Create Custom Equipment</button>
+      <button class="secondary" @onclick="CancelAutoPolling" disabled="@(!IsWorkflowRunning)">Cancel</button>
+      <label class="inline-check">
+        <input type="checkbox" @bind="AutoPollEnabled" /> Auto-poll until completion
+      </label>
+      @if (IsBusy)
+      {
+        <span class="loading" role="status" aria-live="polite">Loading…</span>
+      }
+    </div>
+  </section>
+
+  <section class="panel">
+    @* Right panel: status, output tabs, and troubleshooting utilities. *@
+    <h2>Actions & Results</h2>
+
+    <div class="status-meta" role="status" aria-live="polite">
+      <div class="status-row">
+        <span class="result">ScenarioId: @DisplayOrDash(ScenarioId)</span>
+        <span class="result">RunId: @DisplayOrDash(RunId)</span>
+        <span class="badge @StatusClass">@StatusLabel</span>
+        @if (LastDurationMs > 0)
+        {
+          <span class="result">@LastDurationMs ms</span>
+        }
+      </div>
+      @if (StatusTimeline.Count > 0)
+      {
+        <ul class="timeline">
+          @foreach (var entry in StatusTimeline.Take(6))
+          {
+            <li>@entry</li>
+          }
+        </ul>
+      }
+    </div>
+
+    @if (ResponseSummary is not null)
+    {
+      <div class="summary-grid">
+        <span>Total rows: <strong>@ResponseSummary.TotalRows</strong></span>
+        <span>Unique bins: <strong>@ResponseSummary.UniqueBins</strong></span>
+        <span>Total weight: <strong>@ResponseSummary.TotalWeight.ToString("0.##")</strong></span>
+        <span>Layers: <strong>@ResponseSummary.MaxLayer</strong></span>
+      </div>
+    }
+
+    <div class="tabs" role="tablist" aria-label="Result views">
+      <button id="tab-response" role="tab" aria-selected="@(ActiveTab == "response")" aria-controls="panel-response" class="@(ActiveTab == "response" ? "tab active" : "tab")" @onclick='() => ActiveTab = "response"'>Response</button>
+      <button id="tab-logs" role="tab" aria-selected="@(ActiveTab == "logs")" aria-controls="panel-logs" class="@(ActiveTab == "logs" ? "tab active" : "tab")" @onclick='() => ActiveTab = "logs"'>Logs</button>
+      <button id="tab-raw" role="tab" aria-selected="@(ActiveTab == "raw")" aria-controls="panel-raw" class="@(ActiveTab == "raw" ? "tab active" : "tab")" @onclick='() => ActiveTab = "raw"'>Request Payload JSON</button>
+    </div>
+
+    <div class="row wrap compact-row">
+      <input class="search-input" placeholder="Search in current tab..." @bind="ResultSearch" @bind:event="oninput" />
+      <button class="secondary" @onclick="CopyActiveTabAsync">@CopyButtonLabel</button>
+      <button class="secondary" @onclick="DownloadActiveTabAsync">@DownloadButtonLabel</button>
+      <button class="secondary" @onclick="LoadRecentRunsAsync">Refresh Recent Runs</button>
+      <button class="secondary" @onclick="ClearResultsPanel">Clear Results</button>
+      <button class="secondary" @onclick="JumpToError">Jump to "error"</button>
+      <button class="secondary" @onclick="RetryLastFailedStepAsync" disabled="@string.IsNullOrWhiteSpace(LastFailedAction)">Retry Last Failed Step</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Error))
+    {
+      <div class="error-banner" role="alert" aria-live="assertive">@Error</div>
+    }
+
+    <div id="panel-response" role="tabpanel" aria-labelledby="tab-response" hidden="@(ActiveTab != "response")">
+      <pre class="results">@DisplayWithSearch(ResultsJson, "No response yet.")</pre>
+    </div>
+    <div id="panel-logs" role="tabpanel" aria-labelledby="tab-logs" hidden="@(ActiveTab != "logs")">
+      <pre class="results">@DisplayWithSearch(LogOutput, "No logs yet.")</pre>
+    </div>
+    <div id="panel-raw" role="tabpanel" aria-labelledby="tab-raw" hidden="@(ActiveTab != "raw")">
+      <pre class="results">@DisplayWithSearch(RequestJson, "No request JSON.")</pre>
+    </div>
+
+    <h3>Recent Runs (local)</h3>
+    <pre class="results">@DisplayWithSearch(RecentRunsJson, "No recent runs yet.")</pre>
+  </section>
+</div>
+
+@* Small JS helper for downloading JSON without adding extra dependencies. *@
+<script>
+  window.packmeshDownloadText = (filename, text) => {
+    const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+</script>
+
+<style>
+  .workspace-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 1rem;
+  }
+
+  .panel {
+    border: 1px solid #d9d9d9;
+    border-radius: 10px;
+    padding: 1rem;
+    background: #fafafa;
+  }
+
+  .quickstart {
+    border: 1px solid #d9e4ff;
+    border-radius: 10px;
+    background: #f7faff;
+    padding: 0.8rem 1rem;
+    margin-bottom: 1rem;
+  }
+
+  h2 {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    font-size: 1.15rem;
+  }
+
+  .muted {
+    color: #555;
+    margin-top: -0.3rem;
+    margin-bottom: 1rem;
+  }
+
+  .compact {
+    margin: 0.15rem 0;
+  }
+
+  .compact-row {
+    margin-top: 0.35rem;
+  }
+
+  .row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.5rem;
+  }
+
+  .wrap {
+    flex-wrap: wrap;
+  }
+
+  .inline-check {
+    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .api-key-input {
+    flex: 1;
+    min-width: 220px;
+  }
+
+  .search-input {
+    min-width: 220px;
+    flex: 1;
+  }
+
+  .api-state {
+    margin: 0.5rem 0 0;
+    font-weight: 600;
+  }
+
+  .api-state-ok { color: #1f7a3e; }
+  .api-state-error { color: #9f2a1d; }
+
+  .editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1rem 0 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .payload-editor {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    border: 1px solid #cfd6df;
+    border-radius: 8px;
+    padding: 0.7rem;
+    background: #fff;
+  }
+
+  .steps {
+    margin-top: 0.8rem;
+    border: 1px dashed #c7ced9;
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    background: #fff;
+  }
+
+  .steps-title {
+    margin: 0 0 0.2rem;
+    font-weight: 700;
+  }
+
+  .steps ol {
+    margin: 0;
+    padding-left: 1.1rem;
+  }
+
+  .steps li.done {
+    color: #1f7a3e;
+    font-weight: 600;
+  }
+
+  .action-row {
+    margin-top: 1rem;
+  }
+
+  .primary {
+    border: none;
+    color: #fff;
+    padding: 0.55rem 0.8rem;
+    border-radius: 8px;
+    font-weight: 700;
+  }
+
+  .primary:disabled { opacity: 0.6; }
+
+  .primary-blue { background: #1a5fe0; }
+  .primary-green { background: #1f7a3e; }
+  .primary-amber { background: #b66a06; }
+  .primary-purple { background: #6a32c9; }
+
+  .secondary {
+    padding: 0.45rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid #ccd3dc;
+    background: #fff;
+  }
+
+  .loading {
+    color: #555;
+    font-weight: 600;
+  }
+
+  .status-meta {
+    position: sticky;
+    top: 0;
+    background: #fafafa;
+    z-index: 1;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .status-row {
+    display: flex;
+    gap: 0.55rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 0.4rem;
+  }
+
+  .timeline {
+    margin: 0;
+    padding-left: 1rem;
+    font-size: 0.85rem;
+    color: #475264;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.35rem;
+    border: 1px solid #d5dde8;
+    background: #fff;
+    border-radius: 8px;
+    padding: 0.55rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .badge {
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 0.2rem 0.55rem;
+    color: #fff;
+  }
+
+  .status-idle { background: #717783; }
+  .status-created { background: #1a5fe0; }
+  .status-queued, .status-running { background: #b66a06; }
+  .status-complete { background: #1f7a3e; }
+  .status-failed { background: #aa1f3d; }
+
+  .result {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.9rem;
+    color: #333;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .tab {
+    border: 1px solid #d1d7e0;
+    border-radius: 8px;
+    background: #fff;
+    padding: 0.35rem 0.65rem;
+  }
+
+  .tab.active {
+    background: #1a5fe0;
+    color: #fff;
+    border-color: #1a5fe0;
+  }
+
+  .validation-message {
+    color: #b00020;
+    font-size: 0.9rem;
+    margin: 0.4rem 0 0;
+  }
+
+  .error-banner {
+    color: #8d1328;
+    background: #ffe7ec;
+    border: 1px solid #ffc2cf;
+    border-radius: 8px;
+    padding: 0.6rem;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+  }
+
+  .results {
+    overflow-x: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 0.8rem;
+    background: #f6f8fa;
+    min-height: 310px;
+  }
+</style>
+
+@code {
+  // Session-only storage keeps API keys out of persistent browser storage.
+  private const string ApiKeyStorageKey = "packmesh.sample.apiKey";
+
+  // Baseline scenario payload used as the default playground template.
+  private const string ScenarioRequestSample = @"{
+  ""name"": ""Golden path packaging scenario"",
+  ""decisionType"": ""endToEnd"",
+  ""contents"": {
+    ""orderId"": ""ORDER-1001"",
+    ""items"": [
+      {
+        ""id"": ""SKU-100"",
+        ""description"": ""Ceramic mug"",
+        ""quantity"": 24,
+        ""weightKg"": 0.35,
+        ""volumeCubicMeters"": 0.0018,
+        ""dimensionsCm"": { ""length"": 12, ""width"": 9, ""height"": 10 }
+      },
+      {
+        ""id"": ""SKU-200"",
+        ""description"": ""Coffee beans 1kg bag"",
+        ""quantity"": 12,
+        ""weightKg"": 1,
+        ""volumeCubicMeters"": 0.003,
+        ""dimensionsCm"": { ""length"": 20, ""width"": 12, ""height"": 10 }
+      }
+    ],
+    ""notes"": ""Demo scenario from Blazor sample"",
+    ""cartonPolicy"": { ""mode"": ""unlimited"" }
+  },
+  ""options"": { ""packagingOption"": ""baseline"" },
+  ""goal"": {
+    ""type"": ""balancedEfficiency"",
+    ""settings"": {
+      ""weightBalancePriority"": ""medium"",
+      ""stabilityPreference"": ""medium"",
+      ""standardizationBias"": ""medium""
+    }
+  },
+  ""status"": ""draft"",
+  ""unitPreference"": ""metric""
+}";
+
+  // Minimal run request: idempotency key helps avoid accidental duplicate executions.
+  private const string RunRequestSample = @"{ ""idempotencyKey"": ""idem-demo-run-001"" }";
+
+  // Informational template that reminds developers status polling is a GET with no body.
+  private const string StatusRequestSample = @"{
+  ""note"": ""GET /v1/scenarios/{scenarioId}/runs/{runId} does not require a request body. Provide scenarioId and runId by running the scenario first.""
+}";
+
+  // Stress template that surfaces edge behavior for constraints and placement logic.
+  private const string EdgeCaseRequestSample = @"{
+  ""name"": ""Edge case: overweight item + orientation stress"",
+  ""decisionType"": ""endToEnd"",
+  ""contents"": {
+    ""orderId"": ""ORDER-EDGE-01"",
+    ""items"": [
+      { ""id"": ""SKU-HEAVY"", ""description"": ""Dense metal part"", ""quantity"": 1, ""weightKg"": 19.5, ""volumeCubicMeters"": 0.012, ""dimensionsCm"": { ""length"": 40, ""width"": 20, ""height"": 15 } },
+      { ""id"": ""SKU-LONG"", ""description"": ""Long item"", ""quantity"": 3, ""weightKg"": 2.1, ""volumeCubicMeters"": 0.015, ""dimensionsCm"": { ""length"": 70, ""width"": 8, ""height"": 6 } }
+    ],
+    ""cartonPolicy"": { ""mode"": ""limited"", ""maxCartons"": 2 }
+  },
+  ""options"": { ""packagingOption"": ""baseline"" },
+  ""goal"": { ""type"": ""balancedEfficiency"" },
+  ""status"": ""draft"",
+  ""unitPreference"": ""metric""
+}";
+
+  // Deliberately broken JSON for validation demo and error-handling walkthroughs.
+  private const string CustomEquipmentRequestSample = @"{
+  ""category"": ""packaging"",
+  ""name"": ""Blazor custom carton demo"",
+  ""description"": ""Created from sample-dotnet playground"",
+  ""lengthMeters"": 0.44,
+  ""widthMeters"": 0.32,
+  ""heightMeters"": 0.29,
+  ""maxPayloadKg"": 22
+}";
+
+  private const string InvalidRequestSample = @"{
+  ""name"": ""Broken example"",
+  ""decisionType"": ""endToEnd"",
+  ""contents"": {
+    ""orderId"": ""ORDER-BROKEN""
+  }
+";
+
+  private string ApiKey { get; set; } = string.Empty;
+  private bool RememberApiKeyForSession { get; set; }
+  private bool ShowApiKey { get; set; }
+  private string SelectedTemplate { get; set; } = "scenario";
+  private string RequestJson { get; set; } = ScenarioRequestSample;
+  private string ScenarioId { get; set; } = string.Empty;
+  private string RunId { get; set; } = string.Empty;
+  private string Status { get; set; } = "idle";
+  private string ResultsJson { get; set; } = string.Empty;
+  private string Error { get; set; } = string.Empty;
+  private string LogOutput { get; set; } = string.Empty;
+  private string ActiveTab { get; set; } = "response";
+  private string JsonValidationError { get; set; } = string.Empty;
+  private string ResultSearch { get; set; } = string.Empty;
+  private long LastDurationMs { get; set; }
+  private bool ShowApiKeyValidation { get; set; }
+  private bool IsBusy { get; set; }
+  private bool AutoPollEnabled { get; set; } = true;
+  private bool IsWorkflowRunning { get; set; }
+  private string CopyButtonLabel { get; set; } = "Copy";
+  private string DownloadButtonLabel { get; set; } = "Download JSON";
+  private string RecentRunsJson { get; set; } = "[]";
+  private string LastFailedAction { get; set; } = string.Empty;
+  private List<string> StatusTimeline { get; } = [];
+  private ResponseSummaryModel? ResponseSummary { get; set; }
+  private CancellationTokenSource? AutoPollCts { get; set; }
+  private CancellationTokenSource? CopyFeedbackCts { get; set; }
+  private CancellationTokenSource? DownloadFeedbackCts { get; set; }
+
+  // Convenience property used to gate actions that require credentials.
+  private bool IsApiKeyMissing => string.IsNullOrWhiteSpace(ApiKey);
+  // Maps current status to a CSS class used by the status badge.
+  private string StatusClass => $"status-{Status.ToLowerInvariant()}";
+  // User-facing status text combining icon + normalized label.
+  private string StatusLabel => $"{GetStatusIcon(Status)} {statusLabel(Status)}";
+
+  // First render bootstrap: restore optional session key and load local run history.
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (!firstRender)
+    {
+      return;
+    }
+
+    var storedKey = await JS.InvokeAsync<string?>("sessionStorage.getItem", ApiKeyStorageKey);
+    if (!string.IsNullOrWhiteSpace(storedKey))
+    {
+      ApiKey = storedKey;
+      RememberApiKeyForSession = true;
+    }
+
+    await LoadRecentRunsAsync();
+    StateHasChanged();
+  }
+
+  // Refreshes the local history panel from browser storage.
+  private async Task LoadRecentRunsAsync()
+  {
+    RecentRunsJson = await Client.ListRecentRuns();
+  }
+
+  // Normalizes service statuses for consistent UI wording.
+  private static string statusLabel(string status) => status.ToLowerInvariant() switch
+  {
+    "idle" => "idle",
+    "created" => "created",
+    "queued" => "queued",
+    "running" => "running",
+    "complete" => "complete",
+    "failed" => "failed",
+    _ => status
+  };
+
+  // Emoji affordance to quickly scan status transitions in the UI.
+  private static string GetStatusIcon(string status) => status.ToLowerInvariant() switch
+  {
+    "complete" => "✅",
+    "running" => "🟡",
+    "queued" => "🔵",
+    "failed" => "🔴",
+    "idle" => "⚪",
+    _ => "⚪"
+  };
+
+  // Toggles API key masking to help with copy/paste and demos.
+  private void ToggleApiKeyVisibility() => ShowApiKey = !ShowApiKey;
+
+  // Reads clipboard text into the API key field (permission-dependent).
+  private async Task PasteApiKeyAsync()
+  {
+    try
+    {
+      var pasted = await JS.InvokeAsync<string>("navigator.clipboard.readText");
+      if (!string.IsNullOrWhiteSpace(pasted))
+      {
+        ApiKey = pasted.Trim();
+        ShowApiKeyValidation = false;
+        await SaveApiKeyToSessionIfNeededAsync();
+      }
+    }
+    catch
+    {
+      Error = "Clipboard paste failed. Browser permissions may block clipboard access.";
+    }
+  }
+
+  // Clears in-memory + session-stored API key state.
+  private void ClearKey()
+  {
+    ApiKey = string.Empty;
+    ShowApiKeyValidation = true;
+    _ = JS.InvokeVoidAsync("sessionStorage.removeItem", ApiKeyStorageKey);
+  }
+
+  // Persists/removes key from sessionStorage based on checkbox state.
+  private async Task OnRememberApiKeyChangedAsync()
+  {
+    await SaveApiKeyToSessionIfNeededAsync();
+  }
+
+  // Central place that enforces session-only key persistence behavior.
+  private async Task SaveApiKeyToSessionIfNeededAsync()
+  {
+    if (RememberApiKeyForSession && !string.IsNullOrWhiteSpace(ApiKey))
+    {
+      await JS.InvokeVoidAsync("sessionStorage.setItem", ApiKeyStorageKey, ApiKey);
+    }
+    else
+    {
+      await JS.InvokeVoidAsync("sessionStorage.removeItem", ApiKeyStorageKey);
+    }
+  }
+
+  // Keeps validation and session storage in sync as users type.
+  private async Task OnApiKeyChanged()
+  {
+    if (!IsApiKeyMissing)
+    {
+      ShowApiKeyValidation = false;
+    }
+
+    await SaveApiKeyToSessionIfNeededAsync();
+  }
+
+  // Guard to prevent accidental unauthenticated requests from the playground UI.
+  private bool ValidateApiKey()
+  {
+    ShowApiKeyValidation = IsApiKeyMissing;
+    if (ShowApiKeyValidation)
+    {
+      Error = "Please provide an API key before sending requests.";
+      return false;
+    }
+
+    return true;
+  }
+
+  // Parses JSON before submit so users get immediate feedback near the editor.
+  private bool ValidateRequestJson()
+  {
+    try
+    {
+      JsonDocument.Parse(RequestJson);
+      JsonValidationError = string.Empty;
+      return true;
+    }
+    catch (JsonException ex)
+    {
+      JsonValidationError = $"Invalid JSON: {ex.Message}";
+      Error = JsonValidationError;
+      return false;
+    }
+  }
+
+  // Swaps the editor payload to the selected sample and resets prior output state.
+  private void ApplyTemplate()
+  {
+    RequestJson = SelectedTemplate switch
+    {
+      "run" => RunRequestSample,
+      "status" => StatusRequestSample,
+      "edge" => EdgeCaseRequestSample,
+      "invalid" => InvalidRequestSample,
+      "customEquipment" => CustomEquipmentRequestSample,
+      _ => ScenarioRequestSample
+    };
+
+    JsonValidationError = string.Empty;
+    Error = string.Empty;
+    ClearResultsPanel();
+  }
+
+  // Pretty-prints current request payload to improve readability before submit.
+  private void FormatRequestJson()
+  {
+    if (!ValidateRequestJson())
+    {
+      return;
+    }
+
+    using var doc = JsonDocument.Parse(RequestJson);
+    RequestJson = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    Error = string.Empty;
+  }
+
+  // Pretty-print helper used for result readability while preserving invalid text as-is.
+  private static string FormatJsonIfPossible(string input)
+  {
+    if (string.IsNullOrWhiteSpace(input))
+    {
+      return input;
+    }
+
+    try
+    {
+      using var doc = JsonDocument.Parse(input);
+      return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    }
+    catch (JsonException)
+    {
+      return input;
+    }
+  }
+
+  // Render helper for nullable IDs in status metadata rows.
+  private static string DisplayOrDash(string value) => string.IsNullOrWhiteSpace(value) ? "-" : value;
+
+  // Filters displayed text by search token while preserving fallback placeholder text.
+  private string DisplayWithSearch(string value, string placeholder)
+  {
+    var baseText = string.IsNullOrWhiteSpace(value) ? placeholder : value;
+    if (string.IsNullOrWhiteSpace(ResultSearch) || string.IsNullOrWhiteSpace(baseText))
+    {
+      return baseText;
+    }
+
+    var lines = baseText.Split('\n');
+    var matches = lines.Where(l => l.Contains(ResultSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+    return matches.Count > 0
+      ? $"Matched {matches.Count} line(s) for '{ResultSearch}':\n\n{string.Join("\n", matches)}"
+      : $"No matches for '{ResultSearch}'.\n\n{baseText}";
+  }
+
+  // Returns the currently visible panel content for copy/download actions.
+  private string GetActiveTabContent() => ActiveTab switch
+  {
+    "logs" => LogOutput,
+    "raw" => RequestJson,
+    _ => ResultsJson
+  };
+
+  // Copies active tab text to clipboard and shows temporary UI feedback.
+  private async Task CopyActiveTabAsync()
+  {
+    var content = GetActiveTabContent();
+    if (string.IsNullOrWhiteSpace(content))
+    {
+      return;
+    }
+
+    try
+    {
+      await JS.InvokeVoidAsync("navigator.clipboard.writeText", content);
+      await ShowButtonFeedbackAsync(
+        () => CopyButtonLabel = "Copied!",
+        () => CopyButtonLabel = "Copy",
+        CopyFeedbackCts,
+        cts => CopyFeedbackCts = cts);
+    }
+    catch
+    {
+      Error = "Copy to clipboard failed. Browser permissions may block clipboard access.";
+    }
+  }
+
+  // Downloads active tab text as a timestamped JSON file.
+  private async Task DownloadActiveTabAsync()
+  {
+    var content = GetActiveTabContent();
+    if (string.IsNullOrWhiteSpace(content))
+    {
+      return;
+    }
+
+    var fileName = $"packmesh-{ActiveTab}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.json";
+    await JS.InvokeVoidAsync("packmeshDownloadText", fileName, content);
+    await ShowButtonFeedbackAsync(
+      () => DownloadButtonLabel = "Downloaded!",
+      () => DownloadButtonLabel = "Download JSON",
+      DownloadFeedbackCts,
+      cts => DownloadFeedbackCts = cts);
+  }
+
+  // Resets workflow state so users can start a clean run quickly.
+  private void ClearResultsPanel()
+  {
+    AutoPollCts?.Cancel();
+    IsWorkflowRunning = false;
+    ScenarioId = string.Empty;
+    RunId = string.Empty;
+    Status = "idle";
+    ResultsJson = string.Empty;
+    Error = string.Empty;
+    LogOutput = string.Empty;
+    ActiveTab = "response";
+    ResultSearch = string.Empty;
+    LastDurationMs = 0;
+    LastFailedAction = string.Empty;
+    ResponseSummary = null;
+    StatusTimeline.Clear();
+  }
+
+  // Reusable temporary UI feedback (Copied!/Downloaded!) with cancellation on rapid re-clicks.
+  private async Task ShowButtonFeedbackAsync(Action applyFeedback, Action clearFeedback, CancellationTokenSource? existingCts, Action<CancellationTokenSource> assignCts)
+  {
+    existingCts?.Cancel();
+    var cts = new CancellationTokenSource();
+    assignCts(cts);
+    applyFeedback();
+    await InvokeAsync(StateHasChanged);
+
+    try
+    {
+      await Task.Delay(1500, cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+      return;
+    }
+
+    clearFeedback();
+    await InvokeAsync(StateHasChanged);
+  }
+
+  // Finds the first "error" token and shows a nearby preview snippet.
+  private void JumpToError()
+  {
+    var content = GetActiveTabContent();
+    var index = content.IndexOf("error", StringComparison.OrdinalIgnoreCase);
+    if (index < 0)
+    {
+      Error = "No 'error' token found in the current tab.";
+      return;
+    }
+
+    var start = Math.Max(0, index - 120);
+    var length = Math.Min(content.Length - start, 360);
+    Error = $"Jump-to-error preview:\n{content.Substring(start, length)}";
+  }
+
+  // Prepends logs so the newest lifecycle event is always visible without scrolling.
+  private void LogMessage(string message)
+  {
+    var entry = $"[{DateTimeOffset.Now:HH:mm:ss}] {message}";
+    LogOutput = $"{entry}\n{LogOutput}";
+    StatusTimeline.Insert(0, entry);
+  }
+
+  // Step 1 API call: submit scenario JSON and store returned scenario id.
+  private async Task CreateScenarioAsync() => await ExecuteWithStateAsync("Create Scenario", async () =>
+  {
+    ScenarioId = await Client.CreateScenario(RequestJson, ApiKey);
+    Status = "created";
+    LastFailedAction = string.Empty;
+    LogMessage($"Scenario created: {ScenarioId}");
+    ActiveTab = "logs";
+  }, validateJson: true);
+
+  // Step 2 API call: launch a run for the active scenario and cache run metadata.
+  private async Task RunScenarioAsync() => await ExecuteWithStateAsync("Run Scenario", async () =>
+  {
+    RunId = await Client.RunScenario(ScenarioId, ApiKey, RequestJson);
+    await Client.SaveRecentRun(ScenarioId, RunId, "queued");
+    await LoadRecentRunsAsync();
+    Status = "queued";
+    LastFailedAction = string.Empty;
+    LogMessage($"Run queued: {RunId}");
+    ActiveTab = "logs";
+  }, validateJson: true);
+
+  // Step 3 API call: poll run status and fetch final results when complete.
+  private async Task PollStatusAsync() => await ExecuteWithStateAsync("Poll Status", async () =>
+  {
+    var status = await Client.GetRunStatus(ScenarioId, RunId, ApiKey);
+    Status = status;
+    await Client.UpdateRecentRunStatus(RunId, status);
+    await LoadRecentRunsAsync();
+    LogMessage($"Status polled: {status}");
+
+    if (status == "complete")
+    {
+      var rawResults = await Client.GetRunResults(ScenarioId, RunId, ApiKey);
+      ResultsJson = FormatJsonIfPossible(rawResults);
+      ResponseSummary = BuildResponseSummary(ResultsJson);
+      ActiveTab = "response";
+      LogMessage("Fetched run results.");
+    }
+  });
+
+  // Guided experience: create scenario -> run scenario -> poll until terminal status.
+
+  // Retrieves user + PackMesh default catalog entries across all equipment categories.
+  private async Task GetEquipmentCatalogAsync() => await ExecuteWithStateAsync("Get Equipment Catalog", async () =>
+  {
+    var catalogJson = await Client.GetEquipmentCatalog(ApiKey);
+    ResultsJson = FormatJsonIfPossible(catalogJson);
+    ActiveTab = "response";
+    LogMessage("Fetched equipment catalog (defaults + user entries).");
+    LastFailedAction = string.Empty;
+  });
+
+  // Creates one custom equipment catalog entry for the authenticated user and re-queries the catalog.
+  private async Task CreateCustomEquipmentAsync() => await ExecuteWithStateAsync("Create Custom Equipment", async () =>
+  {
+    var createdJson = await Client.CreateCustomEquipment(RequestJson, ApiKey);
+    var created = JsonDocument.Parse(createdJson).RootElement;
+    var createdId = created.TryGetProperty("id", out var idProp) ? idProp.GetString() : "unknown";
+    LogMessage($"Created custom equipment: {createdId}");
+
+    var catalogJson = await Client.GetEquipmentCatalog(ApiKey);
+    ResultsJson = FormatJsonIfPossible(catalogJson);
+    ActiveTab = "response";
+    LastFailedAction = string.Empty;
+  }, validateJson: true);
+
+  private async Task RunFullWorkflowAsync()
+  {
+    if (!ValidateApiKey() || !ValidateRequestJson())
+    {
+      return;
+    }
+
+    IsWorkflowRunning = true;
+    AutoPollCts?.Cancel();
+    AutoPollCts = new CancellationTokenSource();
+
+    try
+    {
+      await CreateScenarioAsync();
+      if (Status == "failed") return;
+
+      RequestJson = RunRequestSample;
+      await RunScenarioAsync();
+      if (Status == "failed") return;
+
+      if (!AutoPollEnabled)
+      {
+        return;
+      }
+
+      for (var i = 0; i < 20; i++)
+      {
+        AutoPollCts.Token.ThrowIfCancellationRequested();
+        await PollStatusAsync();
+
+        if (Status is "complete" or "failed")
+        {
+          break;
+        }
+
+        await Task.Delay(1500, AutoPollCts.Token);
+      }
+    }
+    catch (OperationCanceledException)
+    {
+      LogMessage("Workflow canceled.");
+      Status = "idle";
+    }
+    finally
+    {
+      IsWorkflowRunning = false;
+    }
+  }
+
+  // Cancels long-running workflow polling initiated by Run Full Workflow.
+  private void CancelAutoPolling()
+  {
+    AutoPollCts?.Cancel();
+    IsWorkflowRunning = false;
+    LogMessage("Cancel requested.");
+  }
+
+  // Replays only the last failed workflow step for faster recovery loops.
+  private async Task RetryLastFailedStepAsync()
+  {
+    if (string.IsNullOrWhiteSpace(LastFailedAction))
+    {
+      return;
+    }
+
+    switch (LastFailedAction)
+    {
+      case "Create Scenario":
+        await CreateScenarioAsync();
+        break;
+      case "Run Scenario":
+        await RunScenarioAsync();
+        break;
+      case "Poll Status":
+        await PollStatusAsync();
+        break;
+      case "Get Equipment Catalog":
+        await GetEquipmentCatalogAsync();
+        break;
+      case "Create Custom Equipment":
+        await CreateCustomEquipmentAsync();
+        break;
+    }
+  }
+
+  // Standardized action wrapper for busy state, timing metrics, and failure tracking.
+  private async Task ExecuteWithStateAsync(string actionName, Func<Task> action, bool validateJson = false)
+  {
+    if (!ValidateApiKey() || (validateJson && !ValidateRequestJson()))
+    {
+      return;
+    }
+
+    IsBusy = true;
+    Error = string.Empty;
+    var stopwatch = Stopwatch.StartNew();
+
+    try
+    {
+      await action();
+    }
+    catch (Exception ex)
+    {
+      Status = "failed";
+      Error = ex.Message;
+      LastFailedAction = actionName;
+      LogMessage($"{actionName} failed: {ex.Message}");
+    }
+    finally
+    {
+      stopwatch.Stop();
+      LastDurationMs = stopwatch.ElapsedMilliseconds;
+      IsBusy = false;
+    }
+  }
+
+  // Extracts quick headline metrics so developers can sanity-check result quality quickly.
+  private static ResponseSummaryModel? BuildResponseSummary(string rawResults)
+  {
+    if (string.IsNullOrWhiteSpace(rawResults))
+    {
+      return null;
+    }
+
+    try
+    {
+      using var doc = JsonDocument.Parse(rawResults);
+      if (!doc.RootElement.TryGetProperty("data", out var data) || !data.TryGetProperty("rows", out var rows) || rows.ValueKind != JsonValueKind.Array)
+      {
+        return null;
+      }
+
+      var rowCount = rows.GetArrayLength();
+      var bins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      double totalWeight = 0;
+      var maxLayer = 0;
+
+      foreach (var row in rows.EnumerateArray())
+      {
+        if (row.TryGetProperty("bin", out var binProp) && binProp.ValueKind == JsonValueKind.String)
+        {
+          bins.Add(binProp.GetString() ?? string.Empty);
+        }
+
+        if (row.TryGetProperty("weight", out var weightProp) && weightProp.TryGetDouble(out var weight))
+        {
+          totalWeight += weight;
+        }
+
+        if (row.TryGetProperty("layer", out var layerProp) && layerProp.TryGetInt32(out var layer))
+        {
+          maxLayer = Math.Max(maxLayer, layer);
+        }
+      }
+
+      return new ResponseSummaryModel(rowCount, bins.Count, totalWeight, maxLayer);
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  // Compact aggregate model displayed in the response summary strip.
+  private record ResponseSummaryModel(int TotalRows, int UniqueBins, double TotalWeight, int MaxLayer);
+}

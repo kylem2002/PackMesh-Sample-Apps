@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PackMesh Java API Playground</title>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; margin: 1.25rem; }
+    .workspace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1rem; }
+    .panel { border: 1px solid #d9d9d9; border-radius: 10px; padding: 1rem; background: #fafafa; }
+    .quickstart { border: 1px solid #d9e4ff; border-radius: 10px; background: #f7faff; padding: .8rem 1rem; margin-bottom: 1rem; }
+    .row { display:flex; gap:.5rem; align-items:center; margin-top:.5rem; flex-wrap:wrap; }
+    .payload-editor, .results, input, select { width:100%; border:1px solid #cfd6df; border-radius:8px; padding:.6rem; font-family: ui-monospace, monospace; }
+    .payload-editor { min-height: 260px; }
+    .results { background:#fff; overflow:auto; white-space: pre-wrap; }
+    .primary { border:none; color:#fff; padding:.55rem .8rem; border-radius:8px; font-weight:700; cursor:pointer; }
+    .secondary { border:1px solid #cfd6df; background:#fff; padding:.45rem .7rem; border-radius:8px; cursor:pointer; }
+    .primary-blue { background:#1a5fe0; } .primary-green { background:#1f7a3e; } .primary-amber { background:#b66a06; } .primary-purple { background:#6a32c9; }
+    .tabs { display:flex; gap:.5rem; margin-top:.8rem; }
+    .tab.active { background:#111; color:#fff; }
+    .tab { border:1px solid #d9d9d9; border-radius:8px; padding:.4rem .6rem; background:#fff; cursor:pointer; }
+    .muted { color:#555; }
+  </style>
+</head>
+<body>
+<h1>PackMesh Java API Playground</h1>
+<p class="muted">Java/Spring version with the same guided workflow as the Blazor playground.</p>
+<section class="quickstart">
+  <h2>Quick start (30 seconds)</h2>
+  <ol><li>Add API key.</li><li>Keep Create Scenario template selected and run full workflow.</li><li>Inspect summary and response tabs.</li></ol>
+</section>
+<div class="workspace-grid">
+  <section class="panel">
+    <h2>Configuration</h2>
+    <label>API key</label>
+    <div class="row">
+      <input id="apiKey" type="password" placeholder="pmk_live_..." />
+      <button class="secondary" id="toggleKey">Show</button>
+      <button class="secondary" id="clearKey">Clear</button>
+    </div>
+    <label>Example JSON</label>
+    <select id="templateSelect">
+      <option value="scenario">Create Scenario</option><option value="run">Run Scenario</option><option value="status">Poll Status</option>
+    </select>
+    <label>Request JSON</label>
+    <textarea id="requestJson" class="payload-editor"></textarea>
+    <div class="row">
+      <button class="primary primary-blue" id="createBtn">Create Scenario</button>
+      <button class="primary primary-green" id="runBtn">Run Scenario</button>
+      <button class="primary primary-amber" id="pollBtn">Poll Status</button>
+      <button class="primary primary-purple" id="fullBtn">Run Full Workflow</button>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Actions & Results</h2>
+    <p id="meta">ScenarioId: - | RunId: - | Status: idle</p>
+    <div id="summary" class="muted"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="response">Response</button>
+      <button class="tab" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="raw">Request Payload JSON</button>
+    </div>
+    <pre id="response" class="results"></pre>
+    <pre id="logs" class="results" style="display:none"></pre>
+    <pre id="raw" class="results" style="display:none"></pre>
+    <h3>Recent Runs (local)</h3>
+    <pre id="recent" class="results"></pre>
+  </section>
+</div>
+<script th:inline="javascript">
+  const baseUrl = [[${baseUrl}]];
+  const scenarioPayload = `{"name":"Java sample scenario","decisionType":"packaging","contents":{"orderId":"ORDER-1001","items":[{"id":"SKU-100","description":"Ceramic mug","quantity":24,"weightKg":0.35,"volumeCubicMeters":0.0018,"dimensionsCm":{"length":12,"width":9,"height":10}}]},"status":"draft","unitPreference":"metric"}`;
+  const runPayload = '{"idempotencyKey":"idem-java-001"}';
+  const statusPayload = '{"note":"Status endpoint is GET and does not require request body."}';
+  const el = (id) => document.getElementById(id);
+  const state = { scenarioId:'', runId:'', status:'idle', activeTab:'response' };
+  el('requestJson').value = JSON.stringify(JSON.parse(scenarioPayload), null, 2);
+  const log = (m) => { el('logs').textContent = `[${new Date().toLocaleTimeString()}] ${m}\n` + el('logs').textContent; };
+  const refreshMeta = () => { el('meta').textContent = `ScenarioId: ${state.scenarioId || '-'} | RunId: ${state.runId || '-'} | Status: ${state.status}`; el('raw').textContent = el('requestJson').value; };
+  const api = async (path, method, body) => {
+    const key = el('apiKey').value.trim(); if (!key) throw new Error('API key is required.');
+    const res = await fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type':'application/json', 'X-Api-Key': key }, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) throw new Error(await res.text());
+    return await res.json();
+  };
+  const saveRecent = () => {
+    const runs = JSON.parse(localStorage.getItem('packmesh.sample.java.runs') || '[]');
+    if (state.runId) runs.unshift({ scenarioId: state.scenarioId, runId: state.runId, status: state.status, at: new Date().toISOString() });
+    localStorage.setItem('packmesh.sample.java.runs', JSON.stringify(runs.slice(0, 8)));
+    el('recent').textContent = JSON.stringify(JSON.parse(localStorage.getItem('packmesh.sample.java.runs') || '[]'), null, 2);
+  };
+  const show = (v) => { el('response').textContent = JSON.stringify(v, null, 2); };
+  async function createScenario() { const data = await api('/v1/scenarios', 'POST', JSON.parse(el('requestJson').value)); state.scenarioId = data.id || data.scenarioId || ''; state.status = 'created'; show(data); log(`Scenario created: ${state.scenarioId}`); refreshMeta(); }
+  async function runScenario() { if (!state.scenarioId) throw new Error('Create scenario first.'); const data = await api(`/v1/scenarios/${state.scenarioId}/runs`, 'POST', JSON.parse(el('requestJson').value || '{}')); state.runId = data.runId || ''; state.status = 'queued'; show(data); log(`Run started: ${state.runId}`); refreshMeta(); saveRecent(); }
+  async function pollStatus() { if (!state.scenarioId || !state.runId) throw new Error('Run scenario first.'); const data = await api(`/v1/scenarios/${state.scenarioId}/runs/${state.runId}`, 'GET'); state.status = (data.status || 'unknown').toLowerCase(); show(data); log(`Run status: ${state.status}`); refreshMeta(); if (state.status === 'complete') { const rows = data?.data?.rows || []; el('summary').textContent = `Summary: rows=${rows.length}`; saveRecent(); } }
+  async function fullWorkflow() { await createScenario(); el('requestJson').value = runPayload; await runScenario(); for (let i = 0; i < 20; i += 1) { await new Promise(r => setTimeout(r, 1500)); await pollStatus(); if (state.status === 'complete' || state.status === 'failed') break; } }
+  el('templateSelect').addEventListener('change', (e) => { const map = { scenario: scenarioPayload, run: runPayload, status: statusPayload }; el('requestJson').value = JSON.stringify(JSON.parse(map[e.target.value] || scenarioPayload), null, 2); refreshMeta(); });
+  el('toggleKey').addEventListener('click', () => { el('apiKey').type = el('apiKey').type === 'password' ? 'text' : 'password'; el('toggleKey').textContent = el('apiKey').type === 'password' ? 'Show' : 'Hide'; });
+  el('clearKey').addEventListener('click', () => { el('apiKey').value = ''; });
+  el('createBtn').addEventListener('click', () => createScenario().catch((e)=>log(e.message)));
+  el('runBtn').addEventListener('click', () => runScenario().catch((e)=>log(e.message)));
+  el('pollBtn').addEventListener('click', () => pollStatus().catch((e)=>log(e.message)));
+  el('fullBtn').addEventListener('click', () => fullWorkflow().catch((e)=>log(e.message)));
+  document.querySelectorAll('[data-tab]').forEach((btn) => btn.addEventListener('click', () => {
+    state.activeTab = btn.getAttribute('data-tab');
+    document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active')); btn.classList.add('active');
+    ['response','logs','raw'].forEach((id) => { el(id).style.display = id === state.activeTab ? 'block' : 'none'; });
+  }));
+  el('recent').textContent = JSON.stringify(JSON.parse(localStorage.getItem('packmesh.sample.java.runs') || '[]'), null, 2);
+  refreshMeta();
+</script>
+</body>
+</html>

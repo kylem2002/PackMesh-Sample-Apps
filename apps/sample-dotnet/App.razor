@@ -1,0 +1,12 @@
+@namespace SampleDotnet
+@* App-level router: maps URLs to Razor pages in this assembly. *@
+<Router AppAssembly="@typeof(App).Assembly">
+  <Found Context="routeData">
+    @* RouteView renders the component that matches the current URL. *@
+    <RouteView RouteData="@routeData" />
+  </Found>
+  <NotFound>
+    @* Simple fallback used when no route matches. *@
+    <p>Not found</p>
+  </NotFound>
+</Router>

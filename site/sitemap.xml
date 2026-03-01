@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://example.github.io/packmesh-sample-apps/</loc></url>
+<url><loc>https://example.github.io/packmesh-sample-apps/apps/sample-ts.html</loc></url>
+<url><loc>https://example.github.io/packmesh-sample-apps/apps/sample-py.html</loc></url>
+<url><loc>https://example.github.io/packmesh-sample-apps/apps/sample-dotnet.html</loc></url>
+<url><loc>https://example.github.io/packmesh-sample-apps/apps/sample-java.html</loc></url>
+<url><loc>https://example.github.io/packmesh-sample-apps/apps/sample-cpp.html</loc></url>
+</urlset>

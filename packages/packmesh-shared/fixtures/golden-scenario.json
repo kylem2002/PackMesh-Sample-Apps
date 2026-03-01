@@ -1,0 +1,11 @@
+{
+  "name": "Golden path scenario",
+  "items": [
+    { "sku": "A-100", "quantity": 12 },
+    { "sku": "B-200", "quantity": 7 }
+  ],
+  "constraints": {
+    "maxWeightKg": 500,
+    "carrier": "ground"
+  }
+}

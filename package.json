@@ -1,0 +1,14 @@
+{
+  "name": "packmesh-sample-apps",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/sample-ts",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w apps/sample-ts && npm run build -w packages/packmesh-shared",
+    "lint": "npm run lint -w apps/sample-ts",
+    "test": "npm run test -w packages/packmesh-shared"
+  }
+}
