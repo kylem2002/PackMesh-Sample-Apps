@@ -1,5 +1,7 @@
 # packmesh-sample-apps: PackMesh Developer API sample apps
 
+🚀 Create an account and run real scenarios at https://packmesh.com
+
 ![CI](https://img.shields.io/badge/ci-github--actions-blue) ![Pages](https://img.shields.io/badge/docs-github--pages-success)
 
 PackMesh sample apps are **SEO-friendly**, production-inspired reference implementations for the PackMesh Developer API in **TypeScript (Next.js App Router)**, **Python (Streamlit)**, **C# (Blazor WebAssembly)**, **Java (Spring Boot + Thymeleaf)**, and **C++ (cpp-httplib)**.
