@@ -41,18 +41,17 @@ pip install -r requirements.txt
 streamlit run app.py
 
 # C# / Blazor WASM app
-cd ../../PackMesh-Api
 ./scripts/install-dotnet-sdk.sh 8.0
 cd ../packmesh-sample-apps/apps/sample-dotnet
 dotnet run
 
 # Java / Spring Boot app
-cd ../sample-java
+cd apps/sample-java
 ./mvnw spring-boot:run
 # Windows PowerShell: .\mvnw.cmd spring-boot:run
 
 # C++ / cpp-httplib app
-cd ../sample-cpp
+cd apps/sample-cpp
 cmake -S . -B build
 cmake --build build
 ./build/sample-cpp
